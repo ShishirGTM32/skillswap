@@ -3,7 +3,7 @@ __pycache__/
 *.py[codz]
 *$py.class
  
-*/migrations/
+**/migrations/
 */try_socket.py
 # C extensions
 *.so
