@@ -1,0 +1,679 @@
+================================================================================
+SkillSwap API reference
+================================================================================
+Base URL: http://<host>:<port>  (e.g. http://192.168.1.9:8001)
+
+Auth (protected routes):
+  Header: Authorization: Bearer <access_jwt>
+
+Global rules:
+  - Accounts with deactivated_by_admin=true are blocked from protected APIs.
+  - Protected users must be is_active=true and email_verified=true for swap matching.
+  - JSON unless noted (profile PATCH avatar uses multipart/form-data).
+  - DRF validation errors and unhandled exceptions on auth routes use the shapes below.
+  - HandledAPIView routes (skills, desired-skills, swaps) use a standard envelope.
+
+Standard envelope (HandledAPIView — skills, desired-skills, swaps):
+  Success with data:
+    { "success": true, "message": "<string>", "error": "", "data": <object|array> }
+  Success without data:
+    { "success": true, "message": "<string>", "error": "", "data": null }
+  Error:
+    { "success": false, "error": "<single message>" }
+
+Auth envelope (register, OTP, profile, login, etc.):
+  Varies by endpoint; see each section. Many errors:
+    { "success": false, "error": "<message>" }
+  DRF global handler (unhandled APIException):
+    { "success": false, "error": "<message>" }
+
+
+================================================================================
+Route index
+================================================================================
+Auth (public unless noted)
+POST   /api/auth/register/
+POST   /api/auth/login/
+POST   /api/auth/token/refresh/
+POST   /api/auth/resend-otp/
+POST   /api/auth/verify-otp/
+POST   /api/auth/forgot-password/
+POST   /api/auth/reset-password/
+
+Profile & skills (auth)
+GET    /api/auth/self/profile/
+PATCH  /api/auth/self/profile/
+GET    /api/auth/self/skills/
+POST   /api/auth/self/skills/
+PATCH  /api/auth/self/skills/
+GET    /api/auth/self/desired-skills/
+POST   /api/auth/self/desired-skills/
+PATCH  /api/auth/self/desired-skills/
+
+Swaps (auth)
+GET    /api/swaps/matches/
+GET    /api/swaps/requests/
+POST   /api/swaps/requests/
+GET    /api/swaps/requests/<id>/
+PATCH  /api/swaps/requests/<id>/
+
+
+================================================================================
+1. POST /api/auth/register/
+================================================================================
+Creates an inactive, unverified user and sends an activation OTP.
+
+Body:
+{
+  "username": "janedoe",
+  "first_name": "Jane",
+  "last_name": "Doe",
+  "email": "jane@example.com",
+  "password": "min8chars",
+  "confirm_password": "min8chars"
+}
+
+Rules: password must match confirm_password; email and username must be unique (case-insensitive).
+
+Success 201:
+{
+  "success": true,
+  "message": "Registration successful. Check your email for the activation code.",
+  "data": { "email": "<normalized_email>", "purpose": "activate" }
+}
+
+Error 400 / 500: { "success": false, "error": "<message>", "data": null }
+
+
+================================================================================
+2. POST /api/auth/login/
+================================================================================
+Body: login accepts email or username in the "email" field (same key for both).
+
+{
+  "email": "jane@example.com",
+  "password": "min8chars"
+}
+
+Success 200:
+{
+  "success": true,
+  "user": {
+    "profile_complete": <boolean>,
+    "role": "user" | "admin"
+  },
+  "tokens": { "refresh": "<jwt>", "access": "<jwt>" },
+  "is_admin": <boolean>,
+  "message": "Login successful"
+}
+
+Not verified / inactive but password correct 403 (OTP re-issued):
+{
+  "success": false,
+  "message": "Account not activated. OTP sent.",
+  "email": "<user_email>",
+  "needs_activation": true
+}
+
+Error 400 (validation): { "error": "<single message>" }
+
+
+================================================================================
+3. POST /api/auth/token/refresh/
+================================================================================
+Body: { "refresh": "<jwt_refresh>" }
+
+Success 200:
+{
+  "success": true,
+  "message": "",
+  "data": {
+    "access": "<new_access>",
+    "refresh": "<new_refresh_if_rotated>"
+  }
+}
+
+Error 401 / 500:
+{ "success": false, "message": "", "error": "<message>", "data": null }
+
+
+================================================================================
+4. POST /api/auth/resend-otp/
+================================================================================
+Body:
+{
+  "email": "jane@example.com",
+  "purpose": "activate" | "password_reset"
+}
+
+Success responses vary slightly by branch; typical 200:
+{
+  "success": true,
+  "message": "<string>",
+  "data": { "email": "<email>", "purpose": "<same_as_request>" }
+}
+
+Purpose activate: if email unknown, still 200 with generic message. If already verified, 400:
+{ "success": false, "error": "Account is already verified." }
+
+Error 400 / 500: { "success": false, "error": "<message>" } (400 may omit extra keys).
+
+
+================================================================================
+5. POST /api/auth/verify-otp/
+================================================================================
+Body:
+{
+  "email": "jane@example.com",
+  "otp": "<code>",
+  "purpose": "activate" | "password_reset"
+}
+
+Invalid or expired OTP 400: { "success": false, "error": "Invalid or session expired." }
+
+Activate — email unknown 400: { "success": false, "error": "Invalid or session expired." }
+
+Activate — success 200 (newly verified):
+{
+  "success": true,
+  "message": "Account verified. You can log in.",
+  "data": { "email_verified": true, "is_active": true }
+}
+
+Activate — already verified 200:
+{
+  "success": true,
+  "message": "Account already verified.",
+  "data": { "email_verified": true }
+}
+
+Password reset — success 200 (then call reset-password):
+{
+  "success": true,
+  "message": "OTP verified. Submit your new password to reset-password.",
+  "data": { "reset_token": "<one_time_token>" }
+}
+
+Invalid reset flow 400:
+{ "success": false, "error": "Invalid or session expired." }
+
+Other errors: { "success": false, "error": "<message>" }
+
+
+================================================================================
+6. POST /api/auth/forgot-password/
+================================================================================
+Body: { "email": "jane@example.com" }
+
+Success 200:
+{
+  "success": true,
+  "message": "OTP sent to your email.",
+  "data": { "email": "<email>", "purpose": "password_reset" }
+}
+
+Error 400 / 500: { "success": false, "message": "", "error": "<message>", "data": null }
+
+
+================================================================================
+7. POST /api/auth/reset-password/
+================================================================================
+Body:
+{
+  "reset_token": "<from verify-otp password_reset>",
+  "new_password": "min8chars",
+  "confirm_password": "min8chars"
+}
+
+Success 200:
+{
+  "success": true,
+  "message": "Password has been reset.",
+  "data": { "confirm_password_match": true }
+}
+
+Invalid token 400:
+{ "success": false, "message": "", "error": "Invalid or expired reset session.", "data": null }
+
+User missing 404: { "success": false, "message": "", "error": "User not found.", "data": null }
+
+
+================================================================================
+8. GET /api/auth/self/profile/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Success 200:
+{
+  "success": true,
+  "data": {
+    "first_name": "",
+    "last_name": "",
+    "username": "",
+    "avatar": "<absolute URL or null>",
+    "bio": "",
+    "completion_percent": <0-100>,
+    "updated_at": "<ISO8601>",
+    "skills": null | [
+      { "id": <int>, "name": "", "description": "", "proficiency_percent": <0-100> }
+    ]
+  }
+}
+
+completion_percent: 30 if avatar set, +70 if user has at least one skill (max 100).
+
+Error 400 / 500: { "success": false, "error": "<message>" }
+
+
+================================================================================
+9. PATCH /api/auth/self/profile/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+JSON (partial allowed): first_name, last_name, username, bio.
+
+Multipart (avatar): Content-Type: multipart/form-data; optional fields bio, avatar (image ≤ 5 MB).
+
+Success 200:
+{
+  "success": true,
+  "message": "Profile updated.",
+  "data": { ...same shape as GET profile... }
+}
+
+Error 400 / 500: { "success": false, "error": "<message>" }
+
+
+================================================================================
+10. GET /api/auth/self/skills/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Success 200:
+{
+  "success": true,
+  "message": "Skill Fetched successfully",
+  "data": [
+    {
+      "id": <int>,
+      "name": "",
+      "description": "",
+      "proficiency_percent": <0-100>
+    }
+  ]
+}
+
+Error 400 / 500:
+{ "success": false, "message": "", "error": "<message>", "data": null }
+
+
+================================================================================
+11. POST /api/auth/self/skills/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Appends skills in one request. Body:
+
+{
+  "skills": [
+    {
+      "name": "Python",
+      "description": "",
+      "proficiency_percent": 85
+    }
+  ]
+}
+
+Rules (serializer):
+- At most 10 skills in this request.
+- Skill names in the request list must be unique (case-insensitive).
+- Each name must not already exist for this user (case-insensitive).
+
+description and proficiency_percent optional (defaults: empty string, 0).
+
+Success 201:
+{
+  "success": true,
+  "message": "Skills set successfully."
+}
+
+Error 400 / 500: { "success": false, "error": "<message>" }
+
+
+================================================================================
+12. PATCH /api/auth/self/skills/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Bulk sync: the request list is the full desired set. Any existing skill whose id is not listed is deleted. Listed ids are updated; entries without id (or id null) are created.
+
+Body:
+{
+  "skills": [
+    { "id": 1, "name": "Python", "description": "", "proficiency_percent": 90 },
+    { "name": "Go", "description": "", "proficiency_percent": 40 }
+  ]
+}
+
+Rules:
+- At most 10 skills after the operation.
+- Names in the request must be unique (case-insensitive).
+- Every id, if present, must belong to the current user; otherwise 400 "Invalid skill id."
+- Name uniqueness against the database ignores rows that will be removed by this same request (so you can drop and re-add a name in one call).
+
+Success 200:
+{
+  "success": true,
+  "message": "Skills updated successfully."
+}
+
+Error 400 / 500: { "success": false, "error": "<message>" }
+
+Typical client flow: GET skills → edit array locally → PATCH with ids kept on existing rows and omit id on new rows.
+
+
+================================================================================
+13. GET /api/auth/self/desired-skills/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Skills the user wants to learn, ordered by priority (order field, lower = higher priority).
+
+Success 200:
+{
+  "success": true,
+  "message": "Desired skills fetched successfully.",
+  "error": "",
+  "data": [
+    {
+      "id": <int>,
+      "name": "",
+      "description": "",
+      "order": <int>
+    }
+  ]
+}
+
+Error 400 / 500: { "success": false, "error": "<message>" }
+
+
+================================================================================
+14. POST /api/auth/self/desired-skills/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Appends desired skills. Array position sets order (0 = highest priority).
+
+Body:
+{
+  "skills": [
+    { "name": "Python", "description": "" },
+    { "name": "Guitar", "description": "Acoustic" }
+  ]
+}
+
+Rules:
+- At most 10 skills in this request.
+- Skill names in the request list must be unique (case-insensitive).
+- Each name must not already exist for this user (case-insensitive).
+- description optional (default: empty string).
+
+Success 201:
+{
+  "success": true,
+  "message": "Desired skills set successfully.",
+  "error": "",
+  "data": null
+}
+
+Error 400 / 500: { "success": false, "error": "<message>" }
+
+
+================================================================================
+15. PATCH /api/auth/self/desired-skills/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Bulk sync (same pattern as self/skills/). List order sets order field.
+
+Body:
+{
+  "skills": [
+    { "id": 1, "name": "Python", "description": "" },
+    { "name": "Guitar", "description": "Acoustic" }
+  ]
+}
+
+Rules:
+- At most 10 skills after the operation.
+- Names in the request must be unique (case-insensitive).
+- Every id, if present, must belong to the current user; otherwise 400 "Invalid skill id."
+- Name uniqueness ignores rows removed in the same request.
+
+Success 200:
+{
+  "success": true,
+  "message": "Desired skills updated successfully.",
+  "error": "",
+  "data": null
+}
+
+Error 400 / 500: { "success": false, "error": "<message>" }
+
+
+================================================================================
+16. GET /api/swaps/matches/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Returns users with a mutual skill swap:
+  - They teach at least one skill on your desired-skills list.
+  - They want to learn at least one skill on your teachable-skills list.
+  - Both users: active, email verified, not admin-deactivated.
+
+You must have at least one skill and one desired skill to get matches.
+
+Success 200:
+{
+  "success": true,
+  "message": "Swap matches fetched successfully.",
+  "error": "",
+  "data": [
+    {
+      "user": {
+        "id": <int>,
+        "username": "",
+        "first_name": "",
+        "last_name": "",
+        "avatar": "<absolute URL or null>",
+        "bio": ""
+      },
+      "they_offer": [
+        {
+          "id": <int>,
+          "name": "",
+          "description": "",
+          "proficiency_percent": <0-100>
+        }
+      ],
+      "they_want": [
+        {
+          "id": <int>,
+          "name": "",
+          "description": "",
+          "order": <int>
+        }
+      ],
+      "you_offer": [
+        {
+          "id": <int>,
+          "name": "",
+          "description": "",
+          "proficiency_percent": <0-100>
+        }
+      ],
+      "you_want": [
+        {
+          "id": <int>,
+          "name": "",
+          "description": "",
+          "order": <int>
+        }
+      ]
+    }
+  ]
+}
+
+they_offer / you_want: overlapping skills for what you want to learn.
+they_want / you_offer: overlapping skills for what you can teach them.
+
+Error 400 / 500: { "success": false, "error": "<message>" }
+
+
+================================================================================
+17. GET /api/swaps/requests/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Query parameters:
+  direction  optional  "sent" | "received" | "all"  (default: "all")
+  status     optional  "pending" | "accepted" | "declined" | "cancelled"
+
+Success 200:
+{
+  "success": true,
+  "message": "Swap requests fetched successfully.",
+  "error": "",
+  "data": [
+    {
+      "id": <int>,
+      "status": "pending" | "accepted" | "declined" | "cancelled",
+      "message": "",
+      "requester": {
+        "id": <int>,
+        "username": "",
+        "first_name": "",
+        "last_name": "",
+        "avatar": "<absolute URL or null>"
+      },
+      "recipient": { ...same shape as requester... },
+      "offered_skill": {
+        "id": <int>,
+        "name": "",
+        "description": "",
+        "proficiency_percent": <0-100>
+      },
+      "requested_skill": {
+        "id": <int>,
+        "name": "",
+        "description": "",
+        "proficiency_percent": <0-100>
+      },
+      "created_at": "<ISO8601>",
+      "updated_at": "<ISO8601>"
+    }
+  ]
+}
+
+offered_skill: requester's skill they will teach.
+requested_skill: recipient's skill the requester wants to learn.
+
+Invalid direction 400: { "success": false, "error": "<message>" }
+
+
+================================================================================
+18. POST /api/swaps/requests/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Create a swap request to a matched user.
+
+Body:
+{
+  "recipient_id": <int>,
+  "offered_skill_id": <int>,
+  "requested_skill_id": <int>,
+  "message": ""
+}
+
+Fields:
+  recipient_id        User id from GET /api/swaps/matches/
+  offered_skill_id    Your Skill id (what you will teach)
+  requested_skill_id  Their Skill id (what you want to learn)
+  message             Optional note
+
+Validation:
+  - Recipient must be active, verified, not deactivated; not yourself.
+  - offered_skill_id must belong to you.
+  - requested_skill_id must belong to recipient.
+  - You must have requested_skill.name on your desired-skills list.
+  - Recipient must have offered_skill.name on their desired-skills list.
+  - No duplicate pending request for same requester + recipient + offered + requested.
+
+Success 201:
+{
+  "success": true,
+  "message": "Swap request created successfully.",
+  "error": "",
+  "data": { ...same object shape as one item in GET /api/swaps/requests/... }
+}
+
+Error 400 / 500: { "success": false, "error": "<message>" }
+
+
+================================================================================
+19. GET /api/swaps/requests/<id>/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Returns one request where you are requester or recipient.
+
+Success 200:
+{
+  "success": true,
+  "message": "Swap request fetched successfully.",
+  "error": "",
+  "data": { ...same object shape as POST response data... }
+}
+
+Not found 404: { "success": false, "error": "Swap request not found." }
+
+
+================================================================================
+20. PATCH /api/swaps/requests/<id>/
+================================================================================
+Headers: Authorization: Bearer <access>
+
+Update status on a pending request only.
+
+Body:
+{ "status": "accepted" | "declined" | "cancelled" }
+
+Rules:
+  - accepted / declined: only the recipient may set these.
+  - cancelled: requester or recipient may set.
+  - Only pending requests can be updated.
+
+Success 200:
+{
+  "success": true,
+  "message": "Swap request updated successfully.",
+  "error": "",
+  "data": { ...updated swap request object... }
+}
+
+Error 400 / 404 / 500: { "success": false, "error": "<message>" }
+
+
+================================================================================
+Typical swap client flow
+================================================================================
+1. POST /api/auth/register/ → POST /api/auth/verify-otp/ (activate)
+2. POST /api/auth/login/ → save access token
+3. POST /api/auth/self/skills/        — skills you can teach
+4. POST /api/auth/self/desired-skills/ — skills you want to learn (ordered list)
+5. GET  /api/swaps/matches/           — browse mutual matches
+6. POST /api/swaps/requests/          — request a swap using ids from match + skill lists
+7. GET  /api/swaps/requests/?direction=received&status=pending
+8. PATCH /api/swaps/requests/<id>/    — recipient: { "status": "accepted" }
+
