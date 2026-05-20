@@ -7,6 +7,7 @@ __pycache__/
 */try_socket.py
 # C extensions
 *.so
+# User uploads (never commit)
 /media/
 .vscode
 *.bak
