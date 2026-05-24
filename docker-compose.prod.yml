@@ -1,0 +1,28 @@
+# Production-oriented overlay (no bind-mount of source code)
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env
+    environment:
+      DJANGO_DEBUG: "false"
+      COLLECT_STATIC: "true"
+    command:
+      [
+        "gunicorn",
+        "skillswap.wsgi:application",
+        "--bind",
+        "0.0.0.0:8000",
+        "--workers",
+        "${GUNICORN_WORKERS:-3}",
+        "--timeout",
+        "120",
+      ]
+    volumes: !override
+      - media_data:/app/media
+      - static_data:/app/staticfiles
